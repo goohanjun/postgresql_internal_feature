@@ -73,14 +73,71 @@ make install
 
 ## Usage Example
 
+### Inspecting internal features with `print_nn_cost_features`
+
+Enable the flag and run `EXPLAIN` to see raw planner internals on every node:
+
+```sql
+SET print_nn_cost_features = on;
+EXPLAIN (FORMAT JSON) SELECT * FROM orders o JOIN lineitem l ON o.orderkey = l.orderkey
+WHERE o.totalprice > 1000;
+```
+
+Each plan node in the output will include fields like:
+
+```json
+{
+  "Node Type": "Hash Join",
+  "Startup Cost": 0.00,
+  "Total Cost": 98345.20,
+  "nn_outer_path_rows": 1500000.0,
+  "nn_inner_path_rows": 6001215.0,
+  "nn_path_rows": 5765432.0,
+  "nn_selectivity": 0.95,
+  "nn_numbuckets": 131072,
+  "nn_numbatches": 1,
+  "nn_hashjointuples": 5765432.0,
+  "nn_innerpages": 102456,
+  "nn_outerpages": 25412,
+  "nn_hash_qual_cost_per_tuple": 0.01,
+  "nn_eq_1": 154123.5,
+  ...
+}
+```
+
+These values are exactly what gets sent to the ML server when `use_cost_ml_server = on`.
+
+### Using `inference_ml_cost()` to replace costs with ML predictions
+
+Start an ML inference server that accepts POST requests with the `nn_*` feature JSON and returns predicted costs:
+
+```json
+// expected response format
+{
+  "startup_cost": 0.0,
+  "total_cost": 91200.5,
+  "startup_std_cost": 0.0,
+  "total_std_cost": 3100.2
+}
+```
+
+Then enable the server and run a query:
+
+```sql
+SET use_cost_ml_server = on;
+SET addr_cost_ml_server = 'http://localhost:8000/test';
+
+-- Optionally use worst-case cost: cost = mean + alpha * std
+SET ml_lambda_worst_case_minimization = 1.5;
+
+EXPLAIN SELECT * FROM orders o JOIN lineitem l ON o.orderkey = l.orderkey;
+```
+
+The planner will call the ML server for each candidate path during planning, replace the built-in startup/total costs with the predicted values, and select the plan with the lowest ML-adjusted cost. Enable `print_ml_cost_features = on` alongside to see the predictions in `EXPLAIN` output.
+
 ```sql
 -- Export join features for training
 SET print_sub_queries = on;
-
--- Inspect internal features in EXPLAIN output
-SET print_ml_cost_features = on;
-SET print_nn_cost_features = on;
-EXPLAIN (FORMAT JSON) SELECT ...;
 
 -- Inject ML cardinality estimates
 SET ml_cardest_enabled = on;
